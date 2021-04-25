@@ -106,8 +106,9 @@ contract Starter is Configurable {
     function withdrawable() public view returns (uint amt, uint vol) {
         if(!completed)
             return (0, 0);
-        amt = currency == address(0) ? address(this).balance : IERC20(currency).balanceOf(address(this));
-        amt = amt.add(totalSettledUnderlying.mul(price).div(settleRate).mul(uint(1e18).sub(settleRate)).div(1e18)).sub(totalPurchasedCurrency.mul(uint(1e18).sub(settleRate)).div(1e18));
+        //amt = currency == address(0) ? address(this).balance : IERC20(currency).balanceOf(address(this));
+        //amt = amt.add(totalSettledUnderlying.mul(price).div(settleRate).mul(uint(1e18).sub(settleRate)).div(1e18)).sub(totalPurchasedCurrency.mul(uint(1e18).sub(settleRate)).div(1e18));
+        amt = totalPurchasedCurrency.mul(settleRate).div(1e18);
         vol = IERC20(underlying).balanceOf(address(this)).add(totalSettledUnderlying).sub(totalPurchasedCurrency.mul(settleRate).div(price));
     }
     
