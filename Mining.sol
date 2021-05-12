@@ -520,7 +520,7 @@ contract Governable is Initializable {
      * @dev Contract initializer.
      * called once by the factory at time of deployment
      */
-    function initialize(address governor_) virtual public initializer {
+    function __Governable_init_unchained(address governor_) virtual public initializer {
         governor = governor_;
         emit GovernorshipTransferred(address(0), governor);
     }
@@ -568,10 +568,10 @@ contract Configurable is Governable {
     function getConfig(bytes32 key) public view returns (uint) {
         return config[key];
     }
-    function getConfig(bytes32 key, uint index) public view returns (uint) {
+    function getConfigI(bytes32 key, uint index) public view returns (uint) {
         return config[bytes32(uint(key) ^ index)];
     }
-    function getConfig(bytes32 key, address addr) public view returns (uint) {
+    function getConfigA(bytes32 key, address addr) public view returns (uint) {
         return config[bytes32(uint(key) ^ uint(addr))];
     }
 
@@ -579,38 +579,21 @@ contract Configurable is Governable {
         if(config[key] != value)
             config[key] = value;
     }
-    function _setConfig(bytes32 key, uint index, uint value) internal {
+    function _setConfigI(bytes32 key, uint index, uint value) internal {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function _setConfig(bytes32 key, address addr, uint value) internal {
+    function _setConfigA(bytes32 key, address addr, uint value) internal {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
     }
     
     function setConfig(bytes32 key, uint value) external governance {
         _setConfig(key, value);
     }
-    function setConfig(bytes32 key, uint index, uint value) external governance {
+    function setConfigI(bytes32 key, uint index, uint value) external governance {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function setConfig(bytes32 key, address addr, uint value) public governance {
+    function setConfigA(bytes32 key, address addr, uint value) public governance {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
-    }
-}
-
-
-contract RewardsDistributor is Configurable {
-    using SafeERC20 for IERC20;
-
-    address public rewardsToken;
-	
-    function initialize(address governor, address _rewardsToken) public initializer {
-        super.initialize(governor);
-        rewardsToken = _rewardsToken;
-    }
-    
-    function approvePool(address pool, uint amount) public governance {
-        //IERC20(rewardsToken).safeApprove(pool, amount);
-        IERC20(rewardsToken).approve(pool, amount);             // GT do not support safeApprove
     }
 }
 
@@ -677,12 +660,20 @@ contract StakingRewards is IStakingRewards, RewardsDistributionRecipient, Reentr
     /* ========== CONSTRUCTOR ========== */
 
     //constructor(
-    function initialize(
+    function __StakingRewards_init(
         address _rewardsDistribution,
         address _rewardsToken,
         address _stakingToken
     ) public virtual initializer {
-        super.__ReentrancyGuard_init();
+        __ReentrancyGuard_init_unchained();
+        __StakingRewards_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken);
+    }
+
+    function __StakingRewards_init_unchained(
+        address _rewardsDistribution,
+        address _rewardsToken,
+        address _stakingToken
+    ) public virtual initializer {
         rewardsToken = IERC20(_rewardsToken);
         stakingToken = IERC20(_stakingToken);
         rewardsDistribution = _rewardsDistribution;
@@ -826,28 +817,38 @@ contract StakingPool is Configurable, StakingRewards {
 	bytes32 internal constant _rewards2Begin_   = 'rewards2Begin';
 
 	uint public lep;            // 1: linear, 2: exponential, 3: power
-	uint public period;
+	//uint public period;         // obsolete
 	uint public begin;
 
     mapping (address => uint256) public paid;
-    mapping (address => uint256) public coinAge;
-    mapping (address => uint256) public lasttimeOf;
+    
+    address swapFactory;
+    address[] pathTVL;
+    address[] pathAPY;
 
-    function initialize(address _governor, 
+    function __StakingPool_init(address _governor, 
         address _rewardsDistribution,
         address _rewardsToken,
         address _stakingToken,
         address _ecoAddr
     ) public virtual initializer {
-	    super.initialize(_governor);
-        super.initialize(_rewardsDistribution, _rewardsToken, _stakingToken);
-        config[_ecoAddr_] = uint(_ecoAddr);
-        config[_ecoRatio_] = 0.10 ether;
+	    __ReentrancyGuard_init_unchained();
+	    __Governable_init_unchained(_governor);
+        //__StakingRewards_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken);
+        __StakingPool_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken, _ecoAddr);
     }
 
-    function notifyRewardBegin(uint _lep, uint _period, uint _span, uint _begin) virtual public governance updateReward(address(0)) {
+    function __StakingPool_init_unchained(address _rewardsDistribution, address _rewardsToken, address _stakingToken, address _ecoAddr) public virtual governance {
+        rewardsToken = IERC20(_rewardsToken);
+        stakingToken = IERC20(_stakingToken);
+        rewardsDistribution = _rewardsDistribution;
+        config[_ecoAddr_] = uint(_ecoAddr);
+        config[_ecoRatio_] = 0.1 ether;
+    }
+
+    function notifyRewardBegin(uint _lep, /*uint _period,*/ uint _span, uint _begin) virtual public governance updateReward(address(0)) {
         lep             = _lep;         // 1: linear, 2: exponential, 3: power
-        period          = _period;
+        //period          = _period;
         rewardsDuration = _span;
         begin           = _begin;
         periodFinish    = _begin.add(_span);
@@ -864,13 +865,14 @@ contract StakingPool is Configurable, StakingRewards {
         if(begin == 0 || begin >= now || lastUpdateTime >= now)
             return 0;
             
-        amt = rewardsToken.allowance(rewardsDistribution, address(this)).sub0(rewards[address(0)]);
+        amt = Math.min(rewardsToken.allowance(rewardsDistribution, address(this)), rewardsToken.balanceOf(rewardsDistribution)).sub0(rewards[address(0)]);
         
         // calc rewardDelta in period
         if(lep == 3) {                                                              // power
-            uint y = period.mul(1 ether).div(lastUpdateTime.add(rewardsDuration).sub(begin));
-            uint amt1 = amt.mul(1 ether).div(y);
-            uint amt2 = amt1.mul(period).div(now.add(rewardsDuration).sub(begin));
+            //uint y = period.mul(1 ether).div(lastUpdateTime.add(rewardsDuration).sub(begin));
+            //uint amt1 = amt.mul(1 ether).div(y);
+            //uint amt2 = amt1.mul(period).div(now.add(rewardsDuration).sub(begin));
+            uint amt2 = amt.mul(lastUpdateTime.add(rewardsDuration).sub(begin)).div(now.add(rewardsDuration).sub(begin));
             amt = amt.sub(amt2);
         } else if(lep == 2) {                                                       // exponential
             if(now.sub(lastUpdateTime) < rewardsDuration)
@@ -879,6 +881,9 @@ contract StakingPool is Configurable, StakingRewards {
             amt = amt.mul(now.sub(lastUpdateTime)).div(periodFinish.sub(lastUpdateTime));
         else if(lastUpdateTime >= periodFinish)
             amt = 0;
+            
+        if(config[_ecoAddr_] != 0)
+            amt = amt.mul(uint(1e18).sub(config[_ecoRatio_])).div(1 ether);
     }
     
     function rewardPerToken() virtual override public view returns (uint256) {
@@ -891,40 +896,41 @@ contract StakingPool is Configurable, StakingRewards {
             );
     }
 
-    modifier updateReward(address account) virtual override {
-        (uint delta, uint d) = (rewardDelta(), 0);
+    function earned(address account) virtual override public view returns (uint256) {
+        return Math.min(Math.min(super.earned(account), rewardsToken.allowance(rewardsDistribution, address(this))), rewardsToken.balanceOf(rewardsDistribution));
+	}    
+	
+    modifier updateReward(address account) override {
         rewardPerTokenStored = rewardPerToken();
+        uint delta = rewardDelta();
+        {
+            address addr = address(config[_ecoAddr_]);
+            uint ratio = config[_ecoRatio_];
+            if(addr != address(0) && ratio != 0) {
+                uint d = delta.mul(ratio).div(uint(1e18).sub(ratio));
+                rewards[addr] = rewards[addr].add(d);
+                delta = delta.add(d);
+            }
+        }
+        rewards[address(0)] = rewards[address(0)].add(delta);
         lastUpdateTime = now;
         if (account != address(0)) {
             rewards[account] = earned(account);
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
-            coinAge[account] = now.sub(lasttimeOf[account]).mul(_balances[account]).add(coinAge[account]);
-            lasttimeOf[account] = now;
         }
-
-        address addr = address(config[_ecoAddr_]);
-        uint ratio = config[_ecoRatio_];
-        if(addr != address(0) && ratio != 0) {
-            d = delta.mul(ratio).div(1 ether);
-            rewards[addr] = rewards[addr].add(d);
-        }
-        rewards[address(0)] = rewards[address(0)].add(delta).add(d);
         _;
     }
 
     function getReward() virtual override public {
-        getReward(msg.sender);
+        getRewardA(msg.sender);
     }
-    function getReward(address payable acct) virtual public nonReentrant updateReward(acct) {
-        require(acct != address(0), 'invalid address');
-        require(getConfig(_blocklist_, acct) == 0, 'In blocklist');
+    function getRewardA(address payable acct) virtual public nonReentrant updateReward(acct) {
+        require(getConfigA(_blocklist_, acct) == 0, 'In blocklist');
         bool isContract = acct.isContract();
-        require(!isContract || config[_allowContract_] != 0 || getConfig(_allowlist_, acct) != 0, 'No allowContract');
+        require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, acct) != 0, 'No allowContract');
 
         uint256 reward = rewards[acct];
         if (reward > 0) {
-            paid[acct] = paid[acct].add(reward);
-            paid[address(0)] = paid[address(0)].add(reward);
             rewards[acct] = 0;
             rewards[address(0)] = rewards[address(0)].sub0(reward);
             rewardsToken.safeTransferFrom(rewardsDistribution, acct, reward);
@@ -939,6 +945,25 @@ contract StakingPool is Configurable, StakingRewards {
     }
     event RewardPaid2(address indexed user, uint256 reward2);
 
+    //function compound() virtual public nonReentrant updateReward(msg.sender) {      // only for pool3
+    //    require(getConfigA(_blocklist_, msg.sender) == 0, 'In blocklist');
+    //    bool isContract = msg.sender.isContract();
+    //    require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, msg.sender) != 0, 'No allowContract');
+    //    require(stakingToken == rewardsToken, 'not pool3');
+    //
+    //    uint reward = rewards[msg.sender];
+    //    if (reward > 0) {
+    //        rewards[msg.sender] = 0;
+    //        rewards[address(0)] = rewards[address(0)].sub0(reward);
+    //        rewardsToken.safeTransferFrom(rewardsDistribution, address(this), reward);
+    //        emit RewardPaid(msg.sender, reward);
+    //        
+    //        _totalSupply = _totalSupply.add(reward);
+    //        _balances[msg.sender] = _balances[msg.sender].add(reward);
+    //        emit Staked(msg.sender, reward);
+    //    }
+    //}
+
     function getRewardForDuration() override external view returns (uint256) {
         return rewardsToken.allowance(rewardsDistribution, address(this)).sub0(rewards[address(0)]);
     }
@@ -951,8 +976,73 @@ contract StakingPool is Configurable, StakingRewards {
         return config[_rewards2Ratio_];
     }
     
+    function setPath(address swapFactory_, address[] memory pathTVL_, address[] memory pathAPY_) virtual external governance {
+        uint m = pathTVL_.length;
+        uint n = pathAPY_.length;
+        require(m > 0 && n > 0 && pathTVL_[m-1] == pathAPY_[n-1]);
+        for(uint i=0; i<m-1; i++)
+            require(address(0) != IUniswapV2Factory(swapFactory_).getPair(pathTVL_[i], pathTVL_[i+1]));
+        for(uint i=0; i<n-1; i++)
+            require(address(0) != IUniswapV2Factory(swapFactory_).getPair(pathAPY_[i], pathAPY_[i+1]));
+            
+        swapFactory = swapFactory_;
+        pathTVL = pathTVL_;
+        pathAPY = pathAPY_;
+    }
+    
+    function lptValueTotal() virtual public view returns (uint) {
+        require(pathTVL.length > 0 && pathTVL[0] != address(stakingToken));
+        return IERC20(pathTVL[0]).balanceOf(address(stakingToken)).mul(2);
+    }
+    
+    function lptValue(uint vol) virtual public view returns (uint) {
+        return lptValueTotal().mul(vol).div(IERC20(stakingToken).totalSupply());
+    }
+    
+    function swapValue(uint vol, address[] memory path) virtual public view returns (uint v) {
+        v = vol;
+        for(uint i=0; i<path.length-1; i++) {
+            (uint reserve0, uint reserve1,) = IUniswapV2Pair(IUniswapV2Factory(swapFactory).getPair(path[i], path[i+1])).getReserves();
+            v =  path[i+1] < path[i] ? v.mul(reserve0) / reserve1 : v.mul(reserve1) / reserve0;
+        }
+    }
+    
+    function TVL() virtual public view returns (uint tvl) {
+        if(pathTVL[0] != address(stakingToken))
+            tvl = lptValueTotal();
+        else
+            tvl = totalSupply();
+        tvl = swapValue(tvl, pathTVL);
+    }
+    
+    function APY() virtual public view returns (uint) {
+        uint amt = rewardsToken.allowance(rewardsDistribution, address(this)).sub0(rewards[address(0)]);
+        
+        if(lep == 3) {                                                              // power
+            uint amt2 = amt.mul(365 days).mul(now.add(rewardsDuration).sub(begin)).div(now.add(1).add(rewardsDuration).sub(begin));
+            amt = amt.sub(amt2);
+        } else if(lep == 2) {                                                       // exponential
+            amt = amt.mul(365 days).div(rewardsDuration);
+        }else if(now < periodFinish)                                                // linear
+            amt = amt.mul(365 days).div(periodFinish.sub(lastUpdateTime));
+        else if(lastUpdateTime >= periodFinish)
+            amt = 0;
+        
+        require(address(rewardsToken) == pathAPY[0]);
+        amt = swapValue(amt, pathAPY);
+        return amt.mul(1e18).div(TVL());
+    }
+
     // Reserved storage space to allow for layout changes in the future.
     uint256[50] private ______gap;
+}
+
+interface IUniswapV2Factory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
+
+interface IUniswapV2Pair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
 }
 
 interface IWETH is IERC20 {
@@ -987,6 +1077,9 @@ contract EthPool is StakingPool {
     receive () payable external {
         
     }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[50] private ______gap;
 }
 
 contract DoublePool is StakingPool {
@@ -997,19 +1090,21 @@ contract DoublePool is StakingPool {
     mapping(address => uint256) public userRewardPerTokenPaid2;
     mapping(address => uint256) public rewards2;
 
-    function initialize(address, address, address, address, address) override public {
-        revert();
-    }
+    function __DoublePool_init(address _governor, address _rewardsDistribution, address _rewardsToken, address _stakingToken, address _ecoAddr, address _stakingPool2, address _rewardsToken2) public initializer {
+	    __ReentrancyGuard_init_unchained();
+	    __Governable_init_unchained(_governor);
+	    //__StakingRewards_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken);
+	    __StakingPool_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken, _ecoAddr);
+	    __DoublePool_init_unchained(_stakingPool2, _rewardsToken2);
+	}
     
-    function initialize(address _governor, address _rewardsDistribution, address _rewardsToken, address _stakingToken, address _ecoAddr, address _stakingPool2, address _rewardsToken2) public initializer {
-	    super.initialize(_governor, _rewardsDistribution, _rewardsToken, _stakingToken, _ecoAddr);
-	    
+    function __DoublePool_init_unchained(address _stakingPool2, address _rewardsToken2) public governance {
 	    stakingPool2 = IStakingRewards(_stakingPool2);
 	    rewardsToken2 = IERC20(_rewardsToken2);
 	}
     
-    function notifyRewardBegin(uint _lep, uint _period, uint _span, uint _begin) virtual override public governance updateReward2(address(0)) {
-        super.notifyRewardBegin(_lep, _period, _span, _begin);
+    function notifyRewardBegin(uint _lep, /*uint _period,*/ uint _span, uint _begin) virtual override public governance updateReward2(address(0)) {
+        super.notifyRewardBegin(_lep, /*_period,*/ _span, _begin);
     }
     
     function stake(uint amount) virtual override public updateReward2(msg.sender) {
@@ -1059,10 +1154,337 @@ contract DoublePool is StakingPool {
         }
         _;
     }
-    
+
     // Reserved storage space to allow for layout changes in the future.
     uint256[50] private ______gap;
 }
+
+
+interface IMasterChef {
+    function poolInfo(uint pid) external view returns (address lpToken, uint allocPoint, uint lastRewardBlock, uint accCakePerShare);
+    function userInfo(uint pid, address user) external view returns (uint amount, uint rewardDebt);
+    function pending(uint pid, address user) external view returns (uint);
+    function pendingCake(uint pid, address user) external view returns (uint);
+    function deposit(uint pid, uint amount) external;
+    function withdraw(uint pid, uint amount) external;
+}
+
+contract NestMasterChef is StakingPool {
+    IERC20 internal constant Cake = IERC20(0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82);
+    
+    IMasterChef public stakingPool2;
+    IERC20 public rewardsToken2;
+    mapping(address => uint256) public userRewardPerTokenPaid2;
+    mapping(address => uint256) public rewards2;
+    uint public pid2;
+    uint internal _rewardPerToken2;
+
+    function __NestMasterChef_init(address _governor, address _rewardsDistribution, address _rewardsToken, address _stakingToken, address _ecoAddr, address _stakingPool2, address _rewardsToken2, uint _pid2) public initializer {
+	    __Governable_init_unchained(_governor);
+        __ReentrancyGuard_init_unchained();
+        //__StakingRewards_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken);
+        __StakingPool_init_unchained(_rewardsDistribution, _rewardsToken, _stakingToken, _ecoAddr);
+        __NestMasterChef_init_unchained(_stakingPool2, _rewardsToken2, _pid2);
+	}
+
+    function __NestMasterChef_init_unchained(address _stakingPool2, address _rewardsToken2, uint _pid2) public governance {
+	    stakingPool2 = IMasterChef(_stakingPool2);
+	    rewardsToken2 = IERC20(_rewardsToken2);
+	    pid2 = _pid2;
+    }
+    
+    function notifyRewardBegin(uint _lep, /*uint _period,*/ uint _span, uint _begin) virtual override public governance updateReward2(address(0)) {
+        super.notifyRewardBegin(_lep, /*_period,*/ _span, _begin);
+    }
+    
+    function migrate() virtual public governance updateReward2(address(0)) {
+        uint total = stakingToken.balanceOf(address(this));
+        stakingToken.approve(address(stakingPool2), total);
+        stakingPool2.deposit(pid2, total);
+    }        
+    
+    function stake(uint amount) virtual override public updateReward2(msg.sender) {
+        super.stake(amount);
+        stakingToken.approve(address(stakingPool2), amount);
+        stakingPool2.deposit(pid2, amount);
+    }
+
+    function withdraw(uint amount) virtual override public updateReward2(msg.sender) {
+        stakingPool2.withdraw(pid2, amount);
+        super.withdraw(amount);
+    }
+    
+    function getReward2() virtual public nonReentrant updateReward2(msg.sender) {
+        uint256 reward2 = rewards2[msg.sender];
+        if (reward2 > 0) {
+            rewards2[msg.sender] = 0;
+            rewardsToken2.safeTransfer(msg.sender, reward2);
+            emit RewardPaid2(msg.sender, reward2);
+        }
+    }
+    event RewardPaid2(address indexed user, uint256 reward2);
+
+    function getDoubleReward() virtual public {
+        getReward();
+        getReward2();
+    }
+    
+    function exit() virtual override public {
+        super.exit();
+        getReward2();
+    }
+    
+    function rewardPerToken2() virtual public view returns (uint256) {
+        if(_totalSupply == 0)
+            return _rewardPerToken2;
+        else if(rewardsToken2 == Cake)
+            return stakingPool2.pendingCake(pid2, address(this)).mul(1e18).div(_totalSupply).add(_rewardPerToken2);
+        else
+            return stakingPool2.pending(pid2, address(this)).mul(1e18).div(_totalSupply).add(_rewardPerToken2);
+    }
+
+    function earned2(address account) virtual public view returns (uint256) {
+        return _balances[account].mul(rewardPerToken2().sub(userRewardPerTokenPaid2[account])).div(1e18).add(rewards2[account]);
+    }
+
+    modifier updateReward2(address account) virtual {
+        if(_totalSupply > 0) {
+            uint delta = rewardsToken2.balanceOf(address(this));
+            stakingPool2.deposit(pid2, 0);
+            delta = rewardsToken2.balanceOf(address(this)).sub(delta);
+            _rewardPerToken2 = delta.mul(1e18).div(_totalSupply).add(_rewardPerToken2);
+        }
+        
+        if (account != address(0)) {
+            rewards2[account] = earned2(account);
+            userRewardPerTokenPaid2[account] = _rewardPerToken2;
+        }
+        _;
+    }
+
+    uint256[50] private __gap;
+}
+
+contract IioPoolV2 is StakingPool {         // support multi IIO at the same time
+    //address internal constant HelmetAddress = 0x948d2a81086A075b3130BAc19e4c6DEe1D2E3fE8;
+    address internal constant BurnAddress   = 0x000000000000000000000000000000000000dEaD;
+
+    uint private __lastUpdateTime3;                             // obsolete
+    IERC20 private __rewardsToken3;                             // obsolete
+    mapping(IERC20 => uint) public totalSupply3;                                    // rewardsToken3 => totalSupply3
+    mapping(IERC20 => uint) internal _rewardPerToken3;                              // rewardsToken3 => _rewardPerToken3
+    mapping(IERC20 => uint) public begin3;                                          // rewardsToken3 => begin3
+    mapping(IERC20 => uint) public end3;                                            // rewardsToken3 => end3
+    mapping(IERC20 => uint) public claimTime3;                                      // rewardsToken3 => claimTime3
+    mapping(IERC20 => uint) public ticketVol3;                                      // rewardsToken3 => ticketVol3
+    mapping(IERC20 => IERC20)  public ticketToken3;                                 // rewardsToken3 => ticketToken3
+    mapping(IERC20 => address) public ticketRecipient3;                             // rewardsToken3 => ticketRecipient3
+
+    mapping(IERC20 => mapping(address => bool)) public applied3;                    // rewardsToken3 => acct => applied3
+    mapping(IERC20 => mapping(address => uint)) public userRewardPerTokenPaid3;     // rewardsToken3 => acct => paid3
+    mapping(IERC20 => mapping(address => uint)) public rewards3;                    // rewardsToken3 => acct => rewards3
+    
+    mapping(IERC20 => uint) public lastUpdateTime3;                                 // rewardsToken3 => lastUpdateTime3
+    IERC20[] public all;                                                            // all rewardsToken3
+    IERC20[] public active;                                                         // active rewardsToken3
+    
+    //function setReward3BurnHelmet(IERC20 rewardsToken3_, uint begin3_, uint end3_, uint claimTime3_, uint ticketVol3_) virtual external {
+    //    setReward3(rewardsToken3_, begin3_, end3_, claimTime3_, ticketVol3_, IERC20(HelmetAddress), BurnAddress);
+    //}
+    function setReward3(IERC20 rewardsToken3_, uint begin3_, uint end3_, uint claimTime3_, uint ticketVol3_, IERC20 ticketToken3_, address ticketRecipient3_) virtual public governance {
+        lastUpdateTime3     [rewardsToken3_]= begin3_;
+        //rewardsToken3       = rewardsToken3_;
+        begin3              [rewardsToken3_] = begin3_;
+        end3                [rewardsToken3_] = end3_;
+        claimTime3          [rewardsToken3_] = claimTime3_;
+        ticketVol3          [rewardsToken3_] = ticketVol3_;
+        ticketToken3        [rewardsToken3_] = ticketToken3_;
+        ticketRecipient3    [rewardsToken3_] = ticketRecipient3_;
+        
+        uint i=0;
+        for(; i<all.length; i++)
+            if(all[i] == rewardsToken3_)
+                break;
+        if(i>=all.length)
+            all.push(rewardsToken3_);
+            
+        i=0;
+        for(; i<active.length; i++)
+            if(active[i] == rewardsToken3_)
+                break;
+        if(i>=active.length)
+            active.push(rewardsToken3_);
+            
+        emit SetReward3(rewardsToken3_, begin3_, end3_, claimTime3_, ticketVol3_, ticketToken3_, ticketRecipient3_);
+    }
+    event SetReward3(IERC20 indexed rewardsToken3_, uint begin3_, uint end3_, uint claimTime3_, uint ticketVol3_, IERC20 indexed ticketToken3_, address indexed ticketRecipient3_);
+    
+    //function deactive(IERC20 rewardsToken3_) virtual public governance {
+    //    for(uint i=0; i<active.length; i++)
+    //        if(active[i] == rewardsToken3_) {
+    //            active[i] = active[active.length-1];
+    //            active.pop();
+    //            emit Deactive(rewardsToken3_);
+    //            return;
+    //        }
+    //    revert('not found active rewardsToken3_');
+    //}
+    //event Deactive(IERC20 indexed rewardsToken3_);
+
+    function applyReward3(IERC20 rewardsToken3_) virtual public updateReward3(rewardsToken3_, msg.sender) {
+        //IERC20 rewardsToken3_ = rewardsToken3;                                          // save gas
+        require(!applied3[rewardsToken3_][msg.sender], 'applied already');
+        require(now < end3[rewardsToken3_], 'expired');
+        
+        IERC20 ticketToken3_ = ticketToken3[rewardsToken3_];                            // save gas
+        if(address(ticketToken3_) != address(0))
+            ticketToken3_.safeTransferFrom(msg.sender, ticketRecipient3[rewardsToken3_], ticketVol3[rewardsToken3_]);
+        applied3[rewardsToken3_][msg.sender] = true;
+        userRewardPerTokenPaid3[rewardsToken3_][msg.sender] = _rewardPerToken3[rewardsToken3_];
+        totalSupply3[rewardsToken3_] = totalSupply3[rewardsToken3_].add(_balances[msg.sender]);
+        emit ApplyReward3(msg.sender, rewardsToken3_);
+    }
+    event ApplyReward3(address indexed acct, IERC20 indexed rewardsToken3);
+    
+    function rewardDelta3(IERC20 rewardsToken3_) virtual public view returns (uint amt) {
+        //IERC20 rewardsToken3_ = rewardsToken3;                                          // save gas
+        uint lastUpdateTime3_ = lastUpdateTime3[rewardsToken3_];                        // save gas
+        if(begin3[rewardsToken3_] == 0 || begin3[rewardsToken3_] >= now || lastUpdateTime3_ >= now)
+            return 0;
+            
+        amt = Math.min(rewardsToken3_.allowance(rewardsDistribution, address(this)), rewardsToken3_.balanceOf(rewardsDistribution)).sub0(rewards3[rewardsToken3_][address(0)]);
+        
+        uint end3_ = end3[rewardsToken3_];                                              // save gas
+        if(now < end3_)
+            amt = amt.mul(now.sub(lastUpdateTime3_)).div(end3_.sub(lastUpdateTime3_));
+        else if(lastUpdateTime3_ >= end3_)
+            amt = 0;
+            
+        if(config[_ecoAddr_] != 0)
+            amt = amt.mul(uint(1e18).sub(config[_ecoRatio_])).div(1 ether);
+    }
+    
+    function rewardPerToken3(IERC20 rewardsToken3_) virtual public view returns (uint) {
+        if (totalSupply3[rewardsToken3_] == 0) {
+            return _rewardPerToken3[rewardsToken3_];
+        }
+        return
+            _rewardPerToken3[rewardsToken3_].add(
+                rewardDelta3(rewardsToken3_).mul(1e18).div(totalSupply3[rewardsToken3_])
+            );
+    }
+
+    function earned3(IERC20 rewardsToken3_, address account) virtual public view returns (uint) {
+        if(!applied3[rewardsToken3_][account])
+            return 0;
+        return Math.min(rewardsToken3_.balanceOf(rewardsDistribution), _balances[account].mul(rewardPerToken3(rewardsToken3_).sub(userRewardPerTokenPaid3[rewardsToken3_][account])).div(1e18).add(rewards3[rewardsToken3_][account]));
+    }
+
+    function _updateReward3(IERC20 rewardsToken3_, address account) virtual internal {
+        bool applied3_ = applied3[rewardsToken3_][account];                             // save gas
+        if(account == address(0) || applied3_) {
+            _rewardPerToken3[rewardsToken3_] = rewardPerToken3(rewardsToken3_);
+            uint delta = rewardDelta3(rewardsToken3_);
+            {
+                address addr = address(config[_ecoAddr_]);
+                uint ratio = config[_ecoRatio_];
+                if(addr != address(0) && ratio != 0) {
+                    uint d = delta.mul(ratio).div(uint(1e18).sub(ratio));
+                    rewards3[rewardsToken3_][addr] = rewards3[rewardsToken3_][addr].add(d);
+                    delta = delta.add(d);
+                }
+            }
+            rewards3[rewardsToken3_][address(0)] = rewards3[rewardsToken3_][address(0)].add(delta);
+            lastUpdateTime3[rewardsToken3_] = Math.max(begin3[rewardsToken3_], Math.min(now, end3[rewardsToken3_]));
+        }
+        if (account != address(0) && applied3_) {
+            rewards3[rewardsToken3_][account] = earned3(rewardsToken3_, account);
+            userRewardPerTokenPaid3[rewardsToken3_][account] = _rewardPerToken3[rewardsToken3_];
+        }
+    }
+    
+    modifier updateReward3(IERC20 rewardsToken3_, address account) virtual {
+        _updateReward3(rewardsToken3_, account);
+        _;
+    }
+
+    function stake(uint amount) virtual override public {
+        super.stake(amount);
+        for(uint i=0; i<active.length; i++) {
+            IERC20 rewardsToken3_ = active[i];                                          // save gas
+            _updateReward3(rewardsToken3_, msg.sender);
+            if(applied3[rewardsToken3_][msg.sender])
+                totalSupply3[rewardsToken3_] = totalSupply3[rewardsToken3_].add(amount);
+        }    
+    }
+
+    function withdraw(uint amount) virtual override public {
+        for(uint i=0; i<active.length; i++) {
+            IERC20 rewardsToken3_ = active[i];                                          // save gas
+            _updateReward3(rewardsToken3_, msg.sender);
+            if(applied3[rewardsToken3_][msg.sender])
+                totalSupply3[rewardsToken3_] = totalSupply3[rewardsToken3_].sub(amount);
+        }
+        super.withdraw(amount);
+    }
+    
+    function getReward3(IERC20 rewardsToken3_) virtual public nonReentrant updateReward3(rewardsToken3_, msg.sender) {
+        require(getConfigA(_blocklist_, msg.sender) == 0, 'In blocklist');
+        bool isContract = msg.sender.isContract();
+        require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, msg.sender) != 0, 'No allowContract');
+
+        //IERC20 rewardsToken3_ = rewardsToken3;                                          // save gas
+        require(now >= claimTime3[rewardsToken3_], "it's not time yet");
+        uint256 reward3 = rewards3[rewardsToken3_][msg.sender];
+        if (reward3 > 0) {
+            rewards3[rewardsToken3_][msg.sender] = 0;
+            rewards3[rewardsToken3_][address(0)] = rewards3[rewardsToken3_][address(0)].sub0(reward3);
+            rewardsToken3_.safeTransferFrom(rewardsDistribution, msg.sender, reward3);
+            emit RewardPaid3(msg.sender, rewardsToken3_, reward3);
+        }
+    }
+    event RewardPaid3(address indexed user, IERC20 indexed rewardsToken3_, uint256 reward3);
+    
+    uint[47] private __gap;
+}
+
+contract NestMasterChefIioV2 is NestMasterChef, IioPoolV2 {
+    function notifyRewardBegin(uint _lep, /*uint _period,*/ uint _span, uint _begin) virtual override(StakingPool, NestMasterChef) public {
+        NestMasterChef.notifyRewardBegin(_lep, /*_period,*/ _span, _begin);
+    }
+    
+    function stake(uint amount) virtual override(NestMasterChef, IioPoolV2) public {
+        super.stake(amount);
+    }
+
+    function withdraw(uint amount) virtual override(NestMasterChef, IioPoolV2) public {
+        super.withdraw(amount);
+    }
+    
+    function exit() virtual override(StakingRewards, NestMasterChef) public {
+        NestMasterChef.exit();
+    }
+    
+    
+    uint[50] private __gap;
+}
+    
+contract BurningPool is StakingPool {
+    address internal constant BurnAddress   = 0x000000000000000000000000000000000000dEaD;
+    
+    function stake(uint256 amount) virtual override public {
+        super.stake(amount);
+        stakingToken.safeTransfer(BurnAddress, stakingToken.balanceOf(address(this)));
+    }
+
+    function withdraw(uint256) virtual override public {
+        revert('Burned already, none to withdraw');
+    }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[50] private ______gap;
+}
+
 
 contract Mine is Governable {
     using SafeERC20 for IERC20;
@@ -1070,7 +1492,7 @@ contract Mine is Governable {
     address public reward;
 
     function __Mine_init(address governor, address reward_) public initializer {
-        super.initialize(governor);
+        __Governable_init_unchained(governor);
         __Mine_init_unchained(reward_);
     }
     
@@ -1082,4 +1504,10 @@ contract Mine is Governable {
         IERC20(reward).approve(pool, amount);
     }
     
+    function approveToken(address token, address pool, uint amount) public governance {
+        IERC20(token).approve(pool, amount);
+    }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[50] private ______gap;
 }
