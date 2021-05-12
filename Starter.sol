@@ -130,23 +130,26 @@ contract Starter is Configurable {
     ///  sent tokens to this contract.
     /// @param _token The address of the token contract that you want to recover
     function rescueTokens(address _token, address _dst) public governance {
+        require(_token != currency && _token != underlying);
         uint balance = IERC20(_token).balanceOf(address(this));
         IERC20(_token).safeTransfer(_dst, balance);
     }
     
-    function withdrawToken(address _dst) external governance {
-        rescueTokens(address(underlying), _dst);
-    }
-
-    function withdrawToken() external governance {
-        rescueTokens(address(underlying), msg.sender);
-    }
+    //function withdrawToken(address _dst) external governance {
+    //    rescueTokens(address(underlying), _dst);
+    //}
+    //
+    //function withdrawToken() external governance {
+    //    rescueTokens(address(underlying), msg.sender);
+    //}
     
     function withdrawHT(address payable _dst) external governance {
+        require(currency != address(0));
         _dst.transfer(address(this).balance);
     }
     
     function withdrawHT() external governance {
+        require(currency != address(0));
         msg.sender.transfer(address(this).balance);
     }
 
@@ -265,6 +268,7 @@ contract Offering is Configurable {
     ///  sent tokens to this contract.
     /// @param _token The address of the token contract that you want to recover
     function rescueTokens(address _token, address _dst) public governance {
+        require(now > timeClaim);
         uint balance = IERC20(_token).balanceOf(address(this));
         IERC20(_token).safeTransfer(_dst, balance);
     }
@@ -278,10 +282,12 @@ contract Offering is Configurable {
     }
     
     function withdrawHT(address payable _dst) external governance {
+        require(address(currency) != address(0));
         _dst.transfer(address(this).balance);
     }
     
     function withdrawHT() external governance {
+        require(address(currency) != address(0));
         msg.sender.transfer(address(this).balance);
     }
 
