@@ -566,7 +566,8 @@ contract ERC20UpgradeSafe is Initializable, ContextUpgradeSafe, IERC20 {
      */
     function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
         _transfer(sender, recipient, amount);
-        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        if(sender != _msgSender() && _allowances[sender][_msgSender()] != uint(-1))
+            _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
         return true;
     }
 
@@ -724,6 +725,57 @@ contract ERC20UpgradeSafe is Initializable, ContextUpgradeSafe, IERC20 {
 
 
 /**
+ * @dev Extension of {ERC20} that adds a cap to the supply of tokens.
+ */
+abstract contract ERC20CappedUpgradeSafe is Initializable, ERC20UpgradeSafe {
+    uint256 private _cap;
+
+    /**
+     * @dev Sets the value of the `cap`. This value is immutable, it can only be
+     * set once during construction.
+     */
+
+    function __ERC20Capped_init(uint256 cap) internal initializer {
+        __Context_init_unchained();
+        __ERC20Capped_init_unchained(cap);
+    }
+
+    function __ERC20Capped_init_unchained(uint256 cap) internal initializer {
+
+
+        require(cap > 0, "ERC20Capped: cap is 0");
+        _cap = cap;
+
+    }
+
+
+    /**
+     * @dev Returns the cap on the token's total supply.
+     */
+    function cap() public view returns (uint256) {
+        return _cap;
+    }
+
+    /**
+     * @dev See {ERC20-_beforeTokenTransfer}.
+     *
+     * Requirements:
+     *
+     * - minted tokens must not cause the total supply to go over the cap.
+     */
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual override {
+        super._beforeTokenTransfer(from, to, amount);
+
+        if (from == address(0)) { // When minting tokens
+            require(totalSupply().add(amount) <= _cap, "ERC20Capped: cap exceeded");
+        }
+    }
+
+    uint256[49] private __gap;
+}
+
+
+/**
  * @title SafeERC20
  * @dev Wrappers around ERC20 operations that throw on failure (when the token
  * contract returns false). Tokens that return no value (and instead revert or
@@ -795,6 +847,9 @@ library SafeERC20 {
 
 
 contract Governable is Initializable {
+    // bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
+    bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+
     address public governor;
 
     event GovernorshipTransferred(address indexed previousGovernor, address indexed newGovernor);
@@ -808,8 +863,15 @@ contract Governable is Initializable {
         emit GovernorshipTransferred(address(0), governor);
     }
 
+    function _admin() internal view returns (address adm) {
+        bytes32 slot = ADMIN_SLOT;
+        assembly {
+            adm := sload(slot)
+        }
+    }
+    
     modifier governance() {
-        require(msg.sender == governor);
+        require(msg.sender == governor || msg.sender == _admin());
         _;
     }
 
@@ -851,10 +913,10 @@ contract Configurable is Governable {
     function getConfig(bytes32 key) public view returns (uint) {
         return config[key];
     }
-    function getConfig(bytes32 key, uint index) public view returns (uint) {
+    function getConfigI(bytes32 key, uint index) public view returns (uint) {
         return config[bytes32(uint(key) ^ index)];
     }
-    function getConfig(bytes32 key, address addr) public view returns (uint) {
+    function getConfigA(bytes32 key, address addr) public view returns (uint) {
         return config[bytes32(uint(key) ^ uint(addr))];
     }
 
@@ -872,10 +934,10 @@ contract Configurable is Governable {
     function setConfig(bytes32 key, uint value) external governance {
         _setConfig(key, value);
     }
-    function setConfig(bytes32 key, uint index, uint value) external governance {
+    function setConfigI(bytes32 key, uint index, uint value) external governance {
         _setConfig(bytes32(uint(key) ^ index), value);
     }
-    function setConfig(bytes32 key, address addr, uint value) public governance {
+    function setConfigA(bytes32 key, address addr, uint value) public governance {
         _setConfig(bytes32(uint(key) ^ uint(addr)), value);
     }
 }
