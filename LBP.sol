@@ -1003,6 +1003,26 @@ interface IWETH {
 }
 
 
+library AddressWETH {
+    function WETH() internal pure returns (address addr) {
+        assembly {
+            switch chainid() 
+                case  1  { addr := 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 }      // Ethereum Mainnet
+                case  3  { addr := 0xc778417E063141139Fce010982780140Aa0cD5Ab }      // Ethereum Testnet Ropsten
+                case  4  { addr := 0xc778417E063141139Fce010982780140Aa0cD5Ab }      // Ethereum Testnet Rinkeby
+                case  5  { addr := 0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6 }      // Ethereum Testnet Gorli
+                case 42  { addr := 0xd0A1E359811322d97991E03f863a0C30C2cF029C }      // Ethereum Testnet Kovan
+                case 56  { addr := 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c }      // BSC Mainnet
+                case 65  { addr := 0x2219845942d28716c0f7c605765fabdca1a7d9e0 }      // OKExChain Testnet
+                case 66  { addr := 0x8f8526dbfd6e38e3d8307702ca8469bae6c56c15 }      // OKExChain Main
+                case 128 { addr := 0x5545153ccfca01fbd7dd11c0b23ba694d9509a6f }      // HECO Mainnet 
+                case 256 { addr := 0xB49f19289857f4499781AaB9afd4A428C4BE9CA8 }      // HECO Testnet 
+                default  { addr := 0x0                                        }      // unknown 
+        }
+    }
+}
+
+
 contract LBP is Configurable {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -1014,7 +1034,7 @@ contract LBP is Configurable {
 	bytes32 internal constant _feeRate_         = 'feeRate';
 
     address public token;
-    address public WETH;
+    address public currency;
     address public pair;
     address internal distributor;
     address internal recipient;
@@ -1026,14 +1046,14 @@ contract LBP is Configurable {
     uint public cap;                //price
     
     
-    function __LBP_init(address governor_, address token_, address WETH_, address pair_, address distributor_, address recipient_, uint base_, uint cap_, uint target_, uint begin_, uint span_) external initializer {
+    function __LBP_init(address governor_, address token_, address currency_, address pair_, address distributor_, address recipient_, uint base_, uint cap_, uint target_, uint begin_, uint span_) external initializer {
         __Governable_init_unchained(governor_);
-        __LBP_init_unchained(token_, WETH_, pair_, distributor_, recipient_, base_, cap_, target_, begin_, span_);
+        __LBP_init_unchained(token_, currency_, pair_, distributor_, recipient_, base_, cap_, target_, begin_, span_);
     }
     
-    function __LBP_init_unchained(address token_, address WETH_, address pair_, address distributor_, address recipient_, uint base_, uint cap_, uint target_, uint begin_, uint span_) public governance {
+    function __LBP_init_unchained(address token_, address currency_, address pair_, address distributor_, address recipient_, uint base_, uint cap_, uint target_, uint begin_, uint span_) public governance {
         token       = token_;
-        WETH        = WETH_;
+        currency    = currency_;
         pair        = pair_;
         distributor = distributor_;
         recipient   = recipient_;
@@ -1067,13 +1087,13 @@ contract LBP is Configurable {
 
     function priceSwap() virtual public view returns (uint) {
         (uint112 _reserve0, uint112 _reserve1,) = IUniswapV2Pair(pair).getReserves(); // gas savings
-        (uint amt, uint vol) = WETH < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
+        (uint amt, uint vol) = currency < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
         return amt.mul(1e18).div(vol);
     }
     
     function priceLBP() virtual public view returns (uint) {
         (uint112 _reserve0, uint112 _reserve1,) = IUniswapV2Pair(pair).getReserves(); // gas savings
-        (uint amt, uint vol) = WETH < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
+        (uint amt, uint vol) = currency < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
         uint dv = delta();
         uint da = dv == 0 ? 0 : getAmountOut(dv, vol, amt);
         return amt.sub(da).mul(1e18).div(vol.add(dv));
@@ -1081,35 +1101,48 @@ contract LBP is Configurable {
     
     function getStrapOut(uint amount) virtual view public returns (uint) {
         (uint112 _reserve0, uint112 _reserve1,) = IUniswapV2Pair(pair).getReserves(); // gas savings
-        (uint amt, uint vol) = WETH < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
+        (uint amt, uint vol) = currency < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
         uint dv = delta();
         uint da = dv == 0 ? 0 : getAmountOut(dv, vol, amt);
         
         return getAmountOut(amount, amt.sub(da), vol.add(dv));
     }
     
-    function strap(uint minOut) virtual external payable {
-        address payable acct = msg.sender;
+    function strapETH(uint minOut) virtual external payable {
+        require(currency == AddressWETH.WETH(), 'currency is not ETH');
+        IWETH(currency).deposit{ value: msg.value }();
+        IWETH(currency).transfer(pair, msg.value);
+        _strap(msg.sender, msg.value, minOut);
+    }
+    
+    function strap(uint amount, uint minOut) virtual external {
+        IERC20(currency).transferFrom(msg.sender, pair, amount);
+        _strap(msg.sender, amount, minOut);
+    }
+    
+    function _strap(address payable acct, uint amount, uint minOut) virtual internal {
+        //address payable acct = msg.sender;
         require(getConfigA(_blocklist_, acct) == 0, 'In blocklist');
         bool isContract = acct.isContract();
         require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, acct) != 0, 'No allowContract');
         
-        uint out = getStrapOut(msg.value);
+        //uint out = getStrapOut(msg.value);
+        uint out = getStrapOut(amount);
         require(out >= minOut, 'slippage too high');
         
         (uint112 _reserve0, uint112 _reserve1,) = IUniswapV2Pair(pair).getReserves(); // gas savings
-        (uint amt, uint vol) = WETH < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
+        (uint amt, uint vol) = currency < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
         uint dv = delta();
         if(dv > 0) {
             uint da = getAmountOut(dv, vol, amt);
-            (uint d0, uint d1) = WETH < token ? (da, uint(0)) : (uint(0), da);
+            (uint d0, uint d1) = currency < token ? (da, uint(0)) : (uint(0), da);
             IERC20(token).safeTransferFrom(distributor, pair, dv);
             IUniswapV2Pair(pair).swap(d0, d1, recipient, '');
         }
-        (uint d0, uint d1) = WETH < token ? (uint(0), out) : (out, uint(0));
-        IWETH(WETH).deposit{ value: msg.value }();
-        IWETH(WETH).transfer(pair, msg.value);
-        IUniswapV2Pair(pair).swap(d0, d1, msg.sender, '');
+        (uint d0, uint d1) = currency < token ? (uint(0), out) : (out, uint(0));
+        //IWETH(WETH).deposit{ value: msg.value }();
+        //IWETH(WETH).transfer(pair, msg.value);
+        IUniswapV2Pair(pair).swap(d0, d1, acct, '');
         lasttime = now;
     }
 }
