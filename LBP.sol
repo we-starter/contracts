@@ -1110,18 +1110,8 @@ contract LBP is Configurable {
     
     function strapETH(uint minOut) virtual external payable {
         require(currency == AddressWETH.WETH(), 'currency is not ETH');
-        IWETH(currency).deposit{ value: msg.value }();
-        IWETH(currency).transfer(pair, msg.value);
-        _strap(msg.sender, msg.value, minOut);
-    }
-    
-    function strap(uint amount, uint minOut) virtual external {
-        IERC20(currency).transferFrom(msg.sender, pair, amount);
-        _strap(msg.sender, amount, minOut);
-    }
-    
-    function _strap(address payable acct, uint amount, uint minOut) virtual internal {
-        //address payable acct = msg.sender;
+        address payable acct = msg.sender;
+        uint amount = msg.value;
         require(getConfigA(_blocklist_, acct) == 0, 'In blocklist');
         bool isContract = acct.isContract();
         require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, acct) != 0, 'No allowContract');
@@ -1140,8 +1130,33 @@ contract LBP is Configurable {
             IUniswapV2Pair(pair).swap(d0, d1, recipient, '');
         }
         (uint d0, uint d1) = currency < token ? (uint(0), out) : (out, uint(0));
-        //IWETH(WETH).deposit{ value: msg.value }();
-        //IWETH(WETH).transfer(pair, msg.value);
+        IWETH(currency).deposit{ value: amount }();
+        IWETH(currency).transfer(pair, amount);
+        IUniswapV2Pair(pair).swap(d0, d1, acct, '');
+        lasttime = now;
+    }
+    
+    function strap(uint amount, uint minOut) virtual external {
+        address payable acct = msg.sender;
+        require(getConfigA(_blocklist_, acct) == 0, 'In blocklist');
+        bool isContract = acct.isContract();
+        require(!isContract || config[_allowContract_] != 0 || getConfigA(_allowlist_, acct) != 0, 'No allowContract');
+        
+        //uint out = getStrapOut(msg.value);
+        uint out = getStrapOut(amount);
+        require(out >= minOut, 'slippage too high');
+        
+        (uint112 _reserve0, uint112 _reserve1,) = IUniswapV2Pair(pair).getReserves(); // gas savings
+        (uint amt, uint vol) = currency < token ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
+        uint dv = delta();
+        if(dv > 0) {
+            uint da = getAmountOut(dv, vol, amt);
+            (uint d0, uint d1) = currency < token ? (da, uint(0)) : (uint(0), da);
+            IERC20(token).safeTransferFrom(distributor, pair, dv);
+            IUniswapV2Pair(pair).swap(d0, d1, recipient, '');
+        }
+        (uint d0, uint d1) = currency < token ? (uint(0), out) : (out, uint(0));
+        IERC20(currency).transferFrom(acct, pair, amount);
         IUniswapV2Pair(pair).swap(d0, d1, acct, '');
         lasttime = now;
     }
